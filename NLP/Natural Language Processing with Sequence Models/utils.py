@@ -1,85 +1,78 @@
-import string
-import re
-import os
-import nltk
-nltk.download('twitter_samples')
-nltk.download('stopwords')
-from nltk.tokenize import TweetTokenizer
-from nltk.corpus import stopwords, twitter_samples 
-
-tweet_tokenizer = TweetTokenizer(preserve_case=False, strip_handles=True, reduce_len=True)
-
-# Stop words are messy and not that compelling; 
-# "very" and "not" are considered stop words, but they are obviously expressing sentiment
-
-# The porter stemmer lemmatizes "was" to "wa".  Seriously???
-
-# I'm not sure we want to get into stop words
-stopwords_english = stopwords.words('english')
-
-# Also have my doubts about stemming...
-from nltk.stem import PorterStemmer
-stemmer = PorterStemmer()
-
-def process_tweet(tweet):
-    '''
-    Input: 
-        tweet: a string containing a tweet
-    Output:
-        tweets_clean: a list of words containing the processed tweet
-    
-    '''
-    # remove stock market tickers like $GE
-    tweet = re.sub(r'\$\w*', '', tweet)
-    # remove old style retweet text "RT"
-    tweet = re.sub(r'^RT[\s]+', '', tweet)
-    # remove hyperlinks
-    tweet = re.sub(r'https?:\/\/.*[\r\n]*', '', tweet)
-    # remove hashtags
-    # only removing the hash # sign from the word
-    tweet = re.sub(r'#', '', tweet)
-    # tokenize tweets
-    tokenizer = TweetTokenizer(preserve_case=False, strip_handles=True, reduce_len=True)
-    tweet_tokens = tokenizer.tokenize(tweet)
-    ### START CODE HERE ###
-    tweets_clean = []
-    for word in tweet_tokens:
-        if (word not in stopwords_english and # remove stopwords
-            word not in string.punctuation): # remove punctuation
-            #tweets_clean.append(word)
-            stem_word = stemmer.stem(word) # stemming word
-            tweets_clean.append(stem_word)
-    ### END CODE HERE ###
-    return tweets_clean
+import torch
+import spacy
+from torchtext.data.metrics import bleu_score
+import sys
 
 
-# let's not reuse variables
-#all_positive_tweets = twitter_samples.strings('positive_tweets.json')
-#all_negative_tweets = twitter_samples.strings('negative_tweets.json')
+def translate_sentence(model, sentence, german, english, device, max_length=50):
 
-def load_tweets():
-    all_positive_tweets = twitter_samples.strings('positive_tweets.json')
-    all_negative_tweets = twitter_samples.strings('negative_tweets.json')  
-    return all_positive_tweets, all_negative_tweets
-    
-# Layers have weights and a foward function.
-# They create weights when layer.initialize is called and use them.
-# remove this or make it optional 
+    # Load german tokenizer
+    spacy_ger = spacy.load("de")
 
-class Layer(object):
-    """Base class for layers."""
-    def __init__(self):
-        self.weights = None
+    # Create tokens using spacy and everything in lower case (which is what our vocab is)
+    if type(sentence) == str:
+        tokens = [token.text.lower() for token in spacy_ger(sentence)]
+    else:
+        tokens = [token.lower() for token in sentence]
 
-    def forward(self, x):
-        raise NotImplementedError
-  
-    def init_weights_and_state(self, input_signature, random_key):
-        pass
+    # Add <SOS> and <EOS> in beginning and end respectively
+    tokens.insert(0, german.init_token)
+    tokens.append(german.eos_token)
 
-    def init(self, input_signature, random_key):
-        self.init_weights_and_state(input_signature, random_key)
-        return self.weights
-    
-    def __call__(self, x):
-        return self.forward(x)
+    # Go through each german token and convert to an index
+    text_to_indices = [german.vocab.stoi[token] for token in tokens]
+
+    # Convert to Tensor
+    sentence_tensor = torch.LongTensor(text_to_indices).unsqueeze(1).to(device)
+
+    # Build encoder hidden, cell state
+    with torch.no_grad():
+        hidden, cell = model.encoder(sentence_tensor)
+
+    outputs = [english.vocab.stoi["<sos>"]]
+
+    for _ in range(max_length):
+        previous_word = torch.LongTensor([outputs[-1]]).to(device)
+
+        with torch.no_grad():
+            output, hidden, cell = model.decoder(previous_word, hidden, cell)
+            best_guess = output.argmax(1).item()
+
+        outputs.append(best_guess)
+
+        # Model predicts it's the end of the sentence
+        if output.argmax(1).item() == english.vocab.stoi["<eos>"]:
+            break
+
+    translated_sentence = [english.vocab.itos[idx] for idx in outputs]
+
+    # remove start token
+    return translated_sentence[1:]
+
+
+def bleu(data, model, german, english, device):
+    targets = []
+    outputs = []
+
+    for example in data:
+        src = vars(example)["src"]
+        trg = vars(example)["trg"]
+
+        prediction = translate_sentence(model, src, german, english, device)
+        prediction = prediction[:-1]  # remove <eos> token
+
+        targets.append([trg])
+        outputs.append(prediction)
+
+    return bleu_score(outputs, targets)
+
+
+def save_checkpoint(state, filename="my_checkpoint.pth.tar"):
+    print("=> Saving checkpoint")
+    torch.save(state, filename)
+
+
+def load_checkpoint(checkpoint, model, optimizer):
+    print("=> Loading checkpoint")
+    model.load_state_dict(checkpoint["state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
