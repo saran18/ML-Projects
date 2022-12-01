@@ -1,11 +1,11 @@
+# import spacy.cli 
+# spacy.cli.download("en_core_web_md")
+# spacy.cli.download("de_core_news_md")
+
 # !python -m spacy download de_core_news_sm
 # !python -m spacy download en_core_web_sm
 # spacy_de = spacy.load('de_core_news_sm')
 # spacy_en = spacy.load('en_core_web_sm')
-
-# import spacy.cli 
-# spacy.cli.download("en_core_web_md")
-# spacy.cli.download("de_core_news_md")
 
 # !python -m spacy download de
 
